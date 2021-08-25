@@ -15,7 +15,7 @@ use futures_util::TryFutureExt;
 use hyper::client::HttpConnector;
 use hyper::{
     body::to_bytes,
-    header::{AUTHORIZATION, CONTENT_TYPE},
+    header::{AUTHORIZATION, CONTENT_TYPE, SET_COOKIE, COOKIE},
     Body, Client as HyperClient, Error as HyperError, Request as HttpRequest,
     Response as HttpResponse,
 };
@@ -60,6 +60,7 @@ pub struct Credentials {
 pub struct Client<S> {
     credentials: Arc<Credentials>,
     nonce: Arc<AtomicUsize>,
+    cookie: Option<String>,
     inner_service: S,
 }
 
@@ -81,6 +82,7 @@ impl<S> Client<S> {
         Client {
             credentials,
             inner_service: service,
+            cookie: None,
             nonce: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -88,6 +90,10 @@ impl<S> Client<S> {
     /// Increment nonce and return the last value.
     pub fn next_nonce(&self) -> usize {
         self.nonce.load(Ordering::AcqRel)
+    }
+
+    pub fn set_cookie(&mut self, cookie: impl Into<String>) {
+        self.cookie = Some(cookie.into())
     }
 }
 
@@ -148,8 +154,15 @@ where
 
         // Add headers and body
         let request = builder
-            .header(CONTENT_TYPE, "application/json")
-            .body(body)
+            .header(CONTENT_TYPE, "application/json");
+
+        let request = if let Some(cookie) = &self.cookie {
+            request.header(COOKIE, cookie)
+        } else {
+            request
+        };
+
+        let request = request.body(body)
             .unwrap(); // This is safe
 
         // Send request
@@ -159,11 +172,14 @@ where
             .map_err(ConnectionError::Service)
             .map_err(Error::Connection)
             .and_then(|response| async move {
+                let cookie = response.headers().get(SET_COOKIE).map(|c| c.to_str().unwrap().into());
                 let body = to_bytes(response.into_body())
                     .await
                     .map_err(ConnectionError::Body)
                     .map_err(Error::Connection)?;
-                Ok(serde_json::from_slice(&body).map_err(Error::Json)?)
+                let mut json: Response = serde_json::from_slice(&body).map_err(Error::Json)?;
+                json.cookie = cookie.into();
+                Ok(json)
             });
 
         Box::pin(fut)

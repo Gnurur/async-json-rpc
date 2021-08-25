@@ -94,6 +94,7 @@ pub struct Response {
     pub error: Option<RpcError>,
     pub id: serde_json::Value,
     pub jsonrpc: Option<String>,
+    pub cookie: Option<String>,
 }
 
 impl Response {
